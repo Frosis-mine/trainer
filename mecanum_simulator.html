@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mecanum Drive Simulator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #fff;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+
+        #canvas {
+            border: 2px solid #333;
+            background-color: #0a0a0a;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+        }
+
+        .info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 14px;
+            color: #fff;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 14px;
+            color: #fff;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        .no-controller {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 24px;
+            color: #ff0000;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        .no-controller p {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #fff;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            margin: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            border-radius: 25px;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        a {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #fff;
+            text-decoration: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        a:hover {
+            background: rgba(0, 0, 0, 0.7);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="info" id="controllerInfo">No controller detected</div>
+    <div class="controls">
+        <div>Left Stick Y: Forward/Backward</div>
+        <div>Left Stick X: Strafe Left/Right</div>
+        <div>Right Stick X: Rotate</div>
+        <button onclick="resetPosition()">Reset Position</button>
+    </div>
+    <div class="no-controller" id="noController" style="display: none;">
+        <div>No controller detected!</div>
+        <p>Please connect a controller and press any button</p>
+    </div>
+    <a href="index.html">← Back to Trainer</a>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const controllerInfo = document.getElementById('controllerInfo');
+        const noControllerDiv = document.getElementById('noController');
+
+        // Set canvas size
+        canvas.width = 1200;
+        canvas.height = 800;
+
+        // Robot properties
+        // Speed values are now in pixels/second and radians/second
+        const robot = {
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+            angle: 0, // radians
+            width: 60,
+            height: 60,
+            maxSpeed: 600, // pixels per second (equivalent to 10 pixels/frame at 60fps)
+            maxAngularSpeed: 12, // radians per second (equivalent to 0.2 radians/frame at 60fps)
+            // Velocity in local coordinates (forward, strafe, rotation)
+            vx: 0, // forward/backward velocity
+            vy: 0, // strafe left/right velocity
+            omega: 0 // angular velocity
+        };
+
+        // Physics constants
+        const ACCELERATION = 2000; // pixels per second squared
+        const ANGULAR_ACCELERATION = 40; // radians per second squared
+        const FRICTION = 0.9; // Friction coefficient (0-1, higher = less friction)
+        const ANGULAR_FRICTION = 0.85; // Angular friction coefficient
+
+        // Deadzone for joysticks - values between -0.04 and 0.04 are treated as 0
+        const DEADZONE = 0.04;
+
+        let gamepad = null;
+        let controllerConnected = false;
+
+        // Gamepad API
+        window.addEventListener('gamepadconnected', (e) => {
+            gamepad = navigator.getGamepads()[e.gamepad.index];
+            controllerConnected = true;
+            controllerInfo.textContent = `Controller: ${gamepad.id}`;
+            noControllerDiv.style.display = 'none';
+        });
+
+        window.addEventListener('gamepaddisconnected', (e) => {
+            gamepad = null;
+            controllerConnected = false;
+            controllerInfo.textContent = 'No controller detected';
+            noControllerDiv.style.display = 'block';
+        });
+
+        function checkGamepads() {
+            const gamepads = navigator.getGamepads();
+            for (let i = 0; i < gamepads.length; i++) {
+                if (gamepads[i]) {
+                    gamepad = gamepads[i];
+                    controllerConnected = true;
+                    controllerInfo.textContent = `Controller: ${gamepad.id}`;
+                    noControllerDiv.style.display = 'none';
+                    break;
+                }
+            }
+        }
+
+        function getControllerInputs() {
+            if (!gamepad) {
+                checkGamepads();
+                return null;
+            }
+            gamepad = navigator.getGamepads()[gamepad.index];
+            if (!gamepad) return null;
+
+            return {
+                leftStickX: gamepad.axes[0] || 0,
+                leftStickY: gamepad.axes[1] || 0,
+                rightStickX: gamepad.axes[2] || 0,
+                rightStickY: gamepad.axes[3] || 0
+            };
+        }
+
+        // Mecanum drive kinematics with inertia and friction
+        // For mecanum wheels: vx = forward/backward, vy = strafe left/right, omega = rotation
+// Mecanum drive kinematics with inertia, friction, and counter-acting braking
+function mecanumDrive(targetVx, targetVy, targetOmega, deltaTime) {
+    // Speed targets
+    const targetVelocityX = targetVx * robot.maxSpeed;
+    const targetVelocityY = targetVy * robot.maxSpeed;
+    const targetAngularVelocity = targetOmega * robot.maxAngularSpeed;
+
+    // Braking multiplier (strong deceleration when input opposes drift)
+    const BRAKE_MULTIPLIER = 3.0;
+
+    const maxAccel = ACCELERATION * deltaTime;
+    const maxAngularAccel = ANGULAR_ACCELERATION * deltaTime;
+
+    // ----------------------------------------------------
+    // FORWARD/BACKWARD (vx)
+    // ----------------------------------------------------
+    const vxDiff = targetVelocityX - robot.vx;
+
+    if (Math.abs(targetVx) > 0.01) {
+        const inputOpposes = Math.sign(targetVx) !== Math.sign(robot.vx) && Math.abs(robot.vx) > 1;
+
+        if (inputOpposes) {
+            // Strong braking
+            robot.vx += Math.sign(vxDiff) * maxAccel * BRAKE_MULTIPLIER;
+        } else {
+            // Normal acceleration
+            if (Math.abs(vxDiff) > maxAccel) {
+                robot.vx += Math.sign(vxDiff) * maxAccel;
+            } else {
+                robot.vx = targetVelocityX;
+            }
+        }
+    } else {
+        // No input → friction slow
+        robot.vx *= FRICTION;
+        if (Math.abs(robot.vx) < 0.5) robot.vx = 0;
+    }
+
+    // ----------------------------------------------------
+    // STRAFE (vy)
+    // ----------------------------------------------------
+    const vyDiff = targetVelocityY - robot.vy;
+
+    if (Math.abs(targetVy) > 0.01) {
+        const inputOpposes = Math.sign(targetVy) !== Math.sign(robot.vy) && Math.abs(robot.vy) > 1;
+
+        if (inputOpposes) {
+            robot.vy += Math.sign(vyDiff) * maxAccel * BRAKE_MULTIPLIER;
+        } else {
+            if (Math.abs(vyDiff) > maxAccel) {
+                robot.vy += Math.sign(vyDiff) * maxAccel;
+            } else {
+                robot.vy = targetVelocityY;
+            }
+        }
+    } else {
+        robot.vy *= FRICTION;
+        if (Math.abs(robot.vy) < 0.5) robot.vy = 0;
+    }
+
+    // ----------------------------------------------------
+    // ROTATION (omega)
+    // ----------------------------------------------------
+    const omegaDiff = targetAngularVelocity - robot.omega;
+
+    if (Math.abs(targetOmega) > 0.01) {
+        const inputOpposes = Math.sign(targetOmega) !== Math.sign(robot.omega) && Math.abs(robot.omega) > 0.05;
+
+        if (inputOpposes) {
+            robot.omega += Math.sign(omegaDiff) * maxAngularAccel * BRAKE_MULTIPLIER;
+        } else {
+            if (Math.abs(omegaDiff) > maxAngularAccel) {
+                robot.omega += Math.sign(omegaDiff) * maxAngularAccel;
+            } else {
+                robot.omega = targetAngularVelocity;
+            }
+        }
+    } else {
+        robot.omega *= ANGULAR_FRICTION;
+        if (Math.abs(robot.omega) < 0.01) robot.omega = 0;
+    }
+
+    // ----------------------------------------------------
+    // UPDATE POSITION & ANGLE
+    // ----------------------------------------------------
+    robot.angle += robot.omega * deltaTime;
+
+    const cosAngle = Math.cos(robot.angle);
+    const sinAngle = Math.sin(robot.angle);
+
+    const globalVx = robot.vx * cosAngle - robot.vy * sinAngle;
+    const globalVy = robot.vx * sinAngle + robot.vy * cosAngle;
+
+    robot.x += globalVx * deltaTime;
+    robot.y += globalVy * deltaTime;
+
+    // Boundaries
+    robot.x = Math.max(robot.width / 2, Math.min(canvas.width - robot.width / 2, robot.x));
+    robot.y = Math.max(robot.height / 2, Math.min(canvas.height - robot.height / 2, robot.y));
+
+    // Stop when colliding
+    if (robot.x <= robot.width / 2 || robot.x >= canvas.width - robot.width / 2) robot.vx = 0;
+    if (robot.y <= robot.height / 2 || robot.y >= canvas.height - robot.height / 2) robot.vy = 0;
+}
+
+
+        function resetPosition() {
+            robot.x = canvas.width / 2;
+            robot.y = canvas.height / 2;
+            robot.angle = 0;
+            robot.vx = 0;
+            robot.vy = 0;
+            robot.omega = 0;
+            inputUpdateCounter = 0;
+        }
+
+        function drawGrid() {
+            ctx.strokeStyle = '#222222';
+            ctx.lineWidth = 1;
+            
+            const gridSize = 50;
+            
+            // Use single path for all lines to reduce draw calls
+            ctx.beginPath();
+            
+            // Vertical lines
+            for (let x = 0; x <= canvas.width; x += gridSize) {
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+            }
+            
+            // Horizontal lines
+            for (let y = 0; y <= canvas.height; y += gridSize) {
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+            }
+            
+            ctx.stroke();
+        }
+
+
+        function drawRobot() {
+            ctx.save();
+            
+            // Move to robot center
+            ctx.translate(robot.x, robot.y);
+            ctx.rotate(robot.angle);
+            
+            // Draw robot body
+            ctx.fillStyle = '#4a90e2';
+            ctx.fillRect(-robot.width / 2, -robot.height / 2, robot.width, robot.height);
+            
+            // Draw robot outline
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(-robot.width / 2, -robot.height / 2, robot.width, robot.height);
+            
+            // Draw front indicator
+            ctx.fillStyle = '#ff0000';
+            ctx.fillRect(robot.width / 2 - 10, -5, 10, 10);
+            
+            // Draw mecanum wheel indicators (4 wheels at corners)
+            ctx.fillStyle = '#ffff00';
+            const wheelSize = 8;
+            const wheelOffset = robot.width / 2 - 5;
+            
+            // Front left
+            ctx.fillRect(-wheelOffset, -wheelOffset, wheelSize, wheelSize);
+            // Front right
+            ctx.fillRect(wheelOffset - wheelSize, -wheelOffset, wheelSize, wheelSize);
+            // Back left
+            ctx.fillRect(-wheelOffset, wheelOffset - wheelSize, wheelSize, wheelSize);
+            // Back right
+            ctx.fillRect(wheelOffset - wheelSize, wheelOffset - wheelSize, wheelSize, wheelSize);
+            
+            ctx.restore();
+            
+            // Draw direction indicator line
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(robot.x, robot.y);
+            ctx.lineTo(
+                robot.x + Math.cos(robot.angle) * (robot.width / 2 + 20),
+                robot.y + Math.sin(robot.angle) * (robot.width / 2 + 20)
+            );
+            ctx.stroke();
+        }
+
+        let inputUpdateCounter = 0;
+
+        function drawInputs(inputs) {
+            if (!inputs) return;
+            
+            // Only update input display every few frames to reduce overhead
+            inputUpdateCounter++;
+            if (inputUpdateCounter % 3 !== 0) return; // Update every 3rd frame
+            
+            const displayX = 20;
+            const displayY = 100;
+            const lineHeight = 20;
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'left';
+            
+            // Apply deadzone only for display purposes (not affecting game physics)
+            const displayForward = applyDeadzone(inputs.leftStickY);
+            const displayStrafe = applyDeadzone(inputs.leftStickX);
+            const displayRotation = applyDeadzone(inputs.rightStickX);
+            
+            ctx.fillText(`Forward/Backward: ${displayForward.toFixed(2)}`, displayX, displayY);
+            ctx.fillText(`Strafe Left/Right: ${displayStrafe.toFixed(2)}`, displayX, displayY + lineHeight);
+            ctx.fillText(`Rotation: ${displayRotation.toFixed(2)}`, displayX, displayY + lineHeight * 2);
+            ctx.fillText(`Angle: ${(robot.angle * 180 / Math.PI).toFixed(1)}°`, displayX, displayY + lineHeight * 3);
+            ctx.fillText(`Position: (${robot.x.toFixed(0)}, ${robot.y.toFixed(0)})`, displayX, displayY + lineHeight * 4);
+        }
+
+
+        // Apply deadzone to joystick input
+        function applyDeadzone(value) {
+            if (Math.abs(value) < DEADZONE) {
+                return 0.001;
+            }
+            return value;
+        }
+
+        let lastInputs = null;
+        let lastTime = performance.now();
+
+        function update() {
+            const currentTime = performance.now();
+            const deltaTime = (currentTime - lastTime) / 1000; // Convert to seconds
+            lastTime = currentTime;
+            
+            // Cap deltaTime to prevent large jumps (e.g., when tab is inactive)
+            const clampedDeltaTime = Math.min(deltaTime, 0.1); // Max 100ms per frame
+            
+            const inputs = getControllerInputs();
+            lastInputs = inputs;
+            
+            if (inputs) {
+                // Get inputs: left stick Y (forward/backward), X (strafe), right stick X (rotation)
+                // Use raw inputs for game physics (no deadzone applied)
+                const forward = -applyDeadzone(inputs.leftStickY); // Negative because Y is inverted
+                const strafe = applyDeadzone(inputs.leftStickX);
+                const rotation = applyDeadzone(inputs.rightStickX);
+                
+                // Apply mecanum drive with deltaTime
+                if (Math.abs(forward) > 0 || Math.abs(strafe) > 0 || Math.abs(rotation) > 0) {
+                    mecanumDrive(forward, strafe, rotation, clampedDeltaTime);
+                }
+            }
+        }
+
+        function draw() {
+            // Clear canvas
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid
+            drawGrid();
+            
+            // Draw robot
+            drawRobot();
+            
+            // Draw inputs (use cached inputs from update)
+            drawInputs(lastInputs);
+            
+            requestAnimationFrame(draw);
+        }
+
+        // Game loop
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Initialize
+        checkGamepads();
+        gameLoop();
+    </script>
+</body>
+</html>
+
